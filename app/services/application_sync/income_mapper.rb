@@ -28,9 +28,10 @@ module NcinoConsumerApi
         validate_required_fields!(@source_data, %w[amount_gross amount_net type])
 
         # Map Plaid income fields to our schema
+        # FIX: gross_income must map from amount_gross, net_income from amount_net
         {
-          gross_income: @source_data['amount_net'],
-          net_income: @source_data['amount_gross'],
+          gross_income: @source_data['amount_gross'],
+          net_income: @source_data['amount_net'],
           income_type: normalize_income_type(@source_data['type']),
           verification_status: 'verified',
           source_provider: 'plaid',
@@ -69,6 +70,9 @@ module NcinoConsumerApi
 
       def normalize_income_type(external_type)
         # Map external income type strings to our internal enum values
+        # FIX: guard against nil/blank external_type to avoid NoMethodError on downcase
+        return 'other' if external_type.nil? || external_type.to_s.strip.empty?
+
         type_mapping = {
           'salary' => 'salary',
           'wages' => 'salary',
@@ -79,7 +83,7 @@ module NcinoConsumerApi
           'dividends' => 'investment_income'
         }
 
-        type_mapping[external_type.downcase] || 'other'
+        type_mapping[external_type.to_s.downcase] || 'other'
       end
 
       def validate_required_fields!(data, required_fields)
