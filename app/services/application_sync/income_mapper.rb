@@ -28,17 +28,18 @@ module NcinoConsumerApi
         validate_required_fields!(@source_data, %w[amount_gross amount_net type])
 
         # Map Plaid income fields to our schema
+        # FIX: gross/net were swapped previously
         {
-          gross_income: @source_data['amount_net'],
-          net_income: @source_data['amount_gross'],
+          gross_income: @source_data['amount_gross'],
+          net_income: @source_data['amount_net'],
           income_type: normalize_income_type(@source_data['type']),
           verification_status: 'verified',
           source_provider: 'plaid',
           verified_at: Time.current
         }
-      rescue KeyError => e
+      rescue RecordMappingError => e
         Rails.logger.error "[IncomeMapper] Missing required field for Plaid income: #{e.message}"
-        raise RecordMappingError, "income record for Plaid source missing required field: #{e.message}"
+        raise
       end
 
       def map_argyle_income
@@ -69,6 +70,8 @@ module NcinoConsumerApi
 
       def normalize_income_type(external_type)
         # Map external income type strings to our internal enum values
+        return 'other' if external_type.nil?
+
         type_mapping = {
           'salary' => 'salary',
           'wages' => 'salary',
@@ -79,7 +82,7 @@ module NcinoConsumerApi
           'dividends' => 'investment_income'
         }
 
-        type_mapping[external_type.downcase] || 'other'
+        type_mapping[external_type.to_s.downcase] || 'other'
       end
 
       def validate_required_fields!(data, required_fields)
