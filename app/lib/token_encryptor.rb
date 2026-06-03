@@ -5,6 +5,12 @@ module NcinoConsumerApi
     # Encrypts and decrypts sensitive authentication tokens
     # Uses ActiveSupport::MessageEncryptor for secure token handling
 
+    # AES-256-CBC requires a 32-byte key. The key length MUST match the
+    # cipher's expected key size, otherwise encrypt/decrypt produces
+    # malformed payloads and raises InvalidMessage ("missing separator").
+    CIPHER = 'aes-256-cbc'.freeze
+    KEY_LENGTH = ActiveSupport::MessageEncryptor.key_len(CIPHER) # => 32 for aes-256-cbc
+
     class << self
       def encrypt(token)
         encryptor.encrypt_and_sign(token)
@@ -21,12 +27,13 @@ module NcinoConsumerApi
 
       def encryptor
         @encryptor ||= begin
-          # Generate encryption key from secret base
-          # The key should be 32 bytes for AES-256-CBC
+          # Generate encryption key from secret base.
+          # The key length is derived from the cipher so it always matches
+          # (32 bytes for AES-256-CBC).
           secret = ENV.fetch('SECRET_KEY_BASE', 'default_secret_for_development_only')
-          key = ActiveSupport::KeyGenerator.new(secret).generate_key('token_encryption', 16)
+          key = ActiveSupport::KeyGenerator.new(secret).generate_key('token_encryption', KEY_LENGTH)
 
-          ActiveSupport::MessageEncryptor.new(key, cipher: 'aes-256-cbc')
+          ActiveSupport::MessageEncryptor.new(key, cipher: CIPHER)
         end
       end
     end
