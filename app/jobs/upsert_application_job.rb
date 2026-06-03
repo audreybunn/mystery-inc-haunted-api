@@ -36,16 +36,42 @@ module NcinoConsumerApi
     end
 
     def upsert_application(data)
-      # Create the loan application record
-      # SQS ensures at-least-once delivery, so we need to handle duplicates
-      LoanApplication.create!(
-        guid: data[:guid],
+      # SQS guarantees at-least-once delivery, so the same message can arrive
+      # multiple times. We must idempotently create-or-update the record keyed
+      # by its unique business identifier (guid) to avoid duplicate-key errors.
+      #
+      # find_or_initialize_by atomically resolves on the unique guid; we then
+      # update the mutable attributes and save. A RecordNotUnique can still
+      # occur under a race (two concurrent inserts), so we retry once by
+      # re-fetching and updating the now-existing row.
+      loan_app = LoanApplication.find_or_initialize_by(guid: data[:guid])
+
+      loan_app.assign_attributes(
         applicant_name: data[:applicant_name],
         status: data[:status],
         loan_amount: data[:loan_amount],
         product_type: data[:product_type],
         submitted_at: data[:submitted_at]
       )
+
+      loan_app.save!
+      loan_app
+    rescue ActiveRecord::RecordNotUnique => e
+      # Lost an insert race against a concurrent delivery of the same message.
+      # The row now exists; fetch it and apply the update idempotently.
+      Rails.logger.warn "[UpsertApplicationJob] Duplicate insert race for guid #{data[:guid]}: #{e.message}. Retrying as update."
+
+      loan_app = LoanApplication.find_by(guid: data[:guid])
+      raise if loan_app.nil?
+
+      loan_app.update!(
+        applicant_name: data[:applicant_name],
+        status: data[:status],
+        loan_amount: data[:loan_amount],
+        product_type: data[:product_type],
+        submitted_at: data[:submitted_at]
+      )
+      loan_app
     rescue ActiveRecord::RecordInvalid => e
       Rails.logger.warn "[UpsertApplicationJob] Validation failed: #{e.message}"
       raise
