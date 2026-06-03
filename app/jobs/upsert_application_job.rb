@@ -36,16 +36,35 @@ module NcinoConsumerApi
     end
 
     def upsert_application(data)
-      # Create the loan application record
-      # SQS ensures at-least-once delivery, so we need to handle duplicates
-      LoanApplication.create!(
-        guid: data[:guid],
+      # SQS provides at-least-once delivery, so duplicate messages are expected.
+      # Use an idempotent upsert keyed on the unique :guid column instead of a
+      # blind INSERT (create!) which raises Mysql2 "Duplicate entry" errors.
+      #
+      # find_or_initialize_by ensures we update an existing record rather than
+      # attempting to insert a conflicting one. We also guard against a race
+      # condition (two concurrent deliveries) by rescuing RecordNotUnique and
+      # retrying as an update.
+      attributes = {
         applicant_name: data[:applicant_name],
         status: data[:status],
         loan_amount: data[:loan_amount],
         product_type: data[:product_type],
         submitted_at: data[:submitted_at]
-      )
+      }
+
+      loan_app = LoanApplication.find_or_initialize_by(guid: data[:guid])
+      loan_app.assign_attributes(attributes)
+      loan_app.save!
+      loan_app
+    rescue ActiveRecord::RecordNotUnique => e
+      # Race condition: another concurrent delivery inserted the record between
+      # our lookup and save. Reload the now-existing record and update it.
+      Rails.logger.warn "[UpsertApplicationJob] Concurrent insert detected for guid=#{data[:guid]}, retrying as update: #{e.message}"
+      loan_app = LoanApplication.find_by(guid: data[:guid])
+      raise unless loan_app
+
+      loan_app.update!(attributes)
+      loan_app
     rescue ActiveRecord::RecordInvalid => e
       Rails.logger.warn "[UpsertApplicationJob] Validation failed: #{e.message}"
       raise
