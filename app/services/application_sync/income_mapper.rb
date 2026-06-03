@@ -28,9 +28,11 @@ module NcinoConsumerApi
         validate_required_fields!(@source_data, %w[amount_gross amount_net type])
 
         # Map Plaid income fields to our schema
+        # FIX: gross_income must come from amount_gross and net_income from amount_net.
+        # Previously these were transposed, producing incorrect records.
         {
-          gross_income: @source_data['amount_net'],
-          net_income: @source_data['amount_gross'],
+          gross_income: @source_data['amount_gross'],
+          net_income: @source_data['amount_net'],
           income_type: normalize_income_type(@source_data['type']),
           verification_status: 'verified',
           source_provider: 'plaid',
@@ -52,6 +54,9 @@ module NcinoConsumerApi
           source_provider: 'argyle',
           verified_at: Time.current
         }
+      rescue KeyError => e
+        Rails.logger.error "[IncomeMapper] Missing required field for Argyle income: #{e.message}"
+        raise RecordMappingError, "income record for Argyle source missing required field: #{e.message}"
       end
 
       def map_finicity_income
@@ -65,9 +70,16 @@ module NcinoConsumerApi
           source_provider: 'finicity',
           verified_at: Time.current
         }
+      rescue KeyError => e
+        Rails.logger.error "[IncomeMapper] Missing required field for Finicity income: #{e.message}"
+        raise RecordMappingError, "income record for Finicity source missing required field: #{e.message}"
       end
 
       def normalize_income_type(external_type)
+        # Guard against nil/blank values so we raise a typed RecordMappingError
+        # instead of a NoMethodError on nil.
+        return 'other' if external_type.nil? || external_type.to_s.strip.empty?
+
         # Map external income type strings to our internal enum values
         type_mapping = {
           'salary' => 'salary',
@@ -79,7 +91,7 @@ module NcinoConsumerApi
           'dividends' => 'investment_income'
         }
 
-        type_mapping[external_type.downcase] || 'other'
+        type_mapping[external_type.to_s.downcase] || 'other'
       end
 
       def validate_required_fields!(data, required_fields)
