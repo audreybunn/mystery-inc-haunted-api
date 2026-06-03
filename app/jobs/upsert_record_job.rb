@@ -10,6 +10,12 @@ module NcinoConsumerApi
 
     LOCK_TTL = 5000 # milliseconds
 
+    # Redlock retry tuning. Higher retry_count + jitter reduces lock contention
+    # collisions when multiple workers target the same record concurrently.
+    LOCK_RETRY_COUNT = 10
+    LOCK_RETRY_DELAY = 200       # base delay in milliseconds
+    LOCK_RETRY_JITTER = 100      # random jitter added per retry (milliseconds)
+
     # Process record update messages with distributed locking
     # Prevents concurrent updates to the same record across multiple workers
     def perform(sqs_msg, body)
@@ -21,16 +27,28 @@ module NcinoConsumerApi
 
       lock_key = "upsert_lock:#{record_type}:#{record_id}"
 
-      lock_manager.lock(lock_key, LOCK_TTL, retry_count: 1, retry_delay: 100) do |locked|
+      lock_acquired = false
+
+      # Use the block form so Redlock auto-extends/releases the lock, but capture
+      # whether we actually got it so we can decide how to handle contention.
+      lock_manager.lock(lock_key, LOCK_TTL) do |locked|
         if locked
+          lock_acquired = true
           perform_upsert(record_type, record_id, body['data'])
           Rails.logger.info "[UpsertRecordJob] Successfully upserted #{record_type}/#{record_id}"
-        else
-          raise DistributedLockException, "Reached max DistributedLockException retries for UpsertRecordJob for #{record_type}/#{record_id}"
         end
       end
+
+      unless lock_acquired
+        # Did not acquire the lock after all configured retries. Rather than
+        # treating this as a fatal job error, raise so Shoryuken/SQS redelivers
+        # the message later (visibility timeout) and another attempt can succeed.
+        raise DistributedLockException,
+              "Reached max DistributedLockException retries for #{message_id} for #{record_type} with guid #{record_id}"
+      end
     rescue DistributedLockException => e
-      Rails.logger.error "[NcinoConsumerApi][UpsertRecordJob] #{e.message}"
+      # Log and re-raise so the message is NOT auto-deleted and gets retried.
+      Rails.logger.warn "[NcinoConsumerApi][UpsertRecordJob] #{e.message}"
       raise
     rescue StandardError => e
       Rails.logger.error "[NcinoConsumerApi][UpsertRecordJob] Error processing record: #{e.class} - #{e.message}"
@@ -42,8 +60,11 @@ module NcinoConsumerApi
     def lock_manager
       @lock_manager ||= Redlock::Client.new(
         [ENV.fetch('REDIS_URL', 'redis://localhost:6379/0')],
-        retry_count: 1,
-        retry_delay: 100
+        retry_count: LOCK_RETRY_COUNT,
+        retry_delay: LOCK_RETRY_DELAY,
+        # retry_jitter spreads out competing workers so they don't all retry
+        # on the same cadence, dramatically reducing repeated lock contention.
+        retry_jitter: LOCK_RETRY_JITTER
       )
     end
 
