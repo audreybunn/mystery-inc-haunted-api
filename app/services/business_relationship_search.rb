@@ -3,7 +3,10 @@ require 'httparty'
 module NcinoConsumerApi
   class BusinessRelationshipSearch
     include HTTParty
-    base_uri ENV.fetch('NCINO_API_BASE_URL', 'https://api.ncino.com')
+    # The nCino business-banking API lives under the /business-banking path on
+    # the regional host (e.g. us.api.ncino.com). Default to the correct host so
+    # requests are routed to the proper service.
+    base_uri ENV.fetch('NCINO_API_BASE_URL', 'https://us.api.ncino.com/business-banking')
 
     def initialize(tax_id:, legal_name:)
       @tax_id = tax_id
@@ -13,9 +16,9 @@ module NcinoConsumerApi
     # Search for existing business relationship in the nCino platform
     # Returns existing relationship ID if found, nil otherwise
     def search
-      response = self.class.get(
+      response = self.class.post(
         '/v1/relationships/businesses/search',
-        query: build_query_params,
+        body: build_request_body.to_json,
         headers: auth_headers,
         timeout: 10
       )
@@ -33,10 +36,12 @@ module NcinoConsumerApi
 
     private
 
-    def build_query_params
-      # Build query parameters for the search endpoint
-      # Note: legal_name is provided for filtering results
+    # Build the JSON request body for the POST search endpoint.
+    # The search criteria (tax_id and legal_name) must be sent in the body,
+    # not as query string parameters.
+    def build_request_body
       {
+        tax_id: @tax_id,
         legal_name: @legal_name,
         include_inactive: false
       }
@@ -46,6 +51,7 @@ module NcinoConsumerApi
       {
         'Authorization' => "Bearer #{TokenEncryptor.decrypt(ENV['NCINO_API_TOKEN'])}",
         'Content-Type' => 'application/json',
+        'Accept' => 'application/json',
         'X-API-Version' => '2.0'
       }
     end
