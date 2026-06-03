@@ -36,16 +36,37 @@ module NcinoConsumerApi
     end
 
     def upsert_application(data)
-      # Create the loan application record
-      # SQS ensures at-least-once delivery, so we need to handle duplicates
-      LoanApplication.create!(
-        guid: data[:guid],
+      # SQS provides at-least-once delivery, so duplicate messages are expected.
+      # Use the unique business key (guid) to find-or-create, then update
+      # attributes so the operation is truly idempotent and never causes a
+      # duplicate-entry violation on the unique index.
+      loan_app = LoanApplication.find_or_initialize_by(guid: data[:guid])
+
+      loan_app.assign_attributes(
         applicant_name: data[:applicant_name],
         status: data[:status],
         loan_amount: data[:loan_amount],
         product_type: data[:product_type],
         submitted_at: data[:submitted_at]
       )
+
+      loan_app.save!
+      loan_app
+    rescue ActiveRecord::RecordNotUnique => e
+      # Handles the race condition where two messages for the same guid are
+      # processed concurrently and both pass find_or_initialize_by before
+      # either commits. Re-fetch the now-existing row and apply the update.
+      Rails.logger.warn "[UpsertApplicationJob] Concurrent insert detected for guid #{data[:guid]}, retrying as update: #{e.message}"
+
+      loan_app = LoanApplication.find_by!(guid: data[:guid])
+      loan_app.update!(
+        applicant_name: data[:applicant_name],
+        status: data[:status],
+        loan_amount: data[:loan_amount],
+        product_type: data[:product_type],
+        submitted_at: data[:submitted_at]
+      )
+      loan_app
     rescue ActiveRecord::RecordInvalid => e
       Rails.logger.warn "[UpsertApplicationJob] Validation failed: #{e.message}"
       raise
