@@ -3,7 +3,9 @@ require 'httparty'
 module NcinoConsumerApi
   class BusinessRelationshipSearch
     include HTTParty
-    base_uri ENV.fetch('NCINO_API_BASE_URL', 'https://api.ncino.com')
+    base_uri ENV.fetch('NCINO_API_BASE_URL', 'https://us.api.ncino.com')
+
+    SEARCH_PATH = '/business-banking/v1/relationships/businesses/search'.freeze
 
     def initialize(tax_id:, legal_name:)
       @tax_id = tax_id
@@ -13,9 +15,9 @@ module NcinoConsumerApi
     # Search for existing business relationship in the nCino platform
     # Returns existing relationship ID if found, nil otherwise
     def search
-      response = self.class.get(
-        '/v1/relationships/businesses/search',
-        query: build_query_params,
+      response = self.class.post(
+        SEARCH_PATH,
+        body: build_request_body.to_json,
         headers: auth_headers,
         timeout: 10
       )
@@ -24,7 +26,7 @@ module NcinoConsumerApi
         parse_response(response)
       else
         log_error(response)
-        raise SearchError, "Error searching for existing business relationship: Received status #{response.code} for /v1/relationships/businesses/search"
+        raise SearchError, "Error searching for existing business relationship: Received status #{response.code} for #{SEARCH_PATH}"
       end
     rescue HTTParty::Error, Net::OpenTimeout => e
       Rails.logger.error "[BusinessRelationshipSearch] HTTP error: #{e.message}"
@@ -33,12 +35,14 @@ module NcinoConsumerApi
 
     private
 
-    def build_query_params
-      # Build query parameters for the search endpoint
-      # Note: legal_name is provided for filtering results
+    def build_request_body
+      # Build JSON request body for the POST search endpoint.
+      # The nCino Business Banking API expects search criteria in the body,
+      # not as query string parameters.
       {
-        legal_name: @legal_name,
-        include_inactive: false
+        taxId: @tax_id,
+        legalName: @legal_name,
+        includeInactive: false
       }
     end
 
@@ -46,6 +50,7 @@ module NcinoConsumerApi
       {
         'Authorization' => "Bearer #{TokenEncryptor.decrypt(ENV['NCINO_API_TOKEN'])}",
         'Content-Type' => 'application/json',
+        'Accept' => 'application/json',
         'X-API-Version' => '2.0'
       }
     end
