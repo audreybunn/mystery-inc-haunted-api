@@ -36,16 +36,43 @@ module NcinoConsumerApi
     end
 
     def upsert_application(data)
-      # Create the loan application record
-      # SQS ensures at-least-once delivery, so we need to handle duplicates
-      LoanApplication.create!(
-        guid: data[:guid],
+      # SQS guarantees at-least-once delivery, so the same message may arrive
+      # multiple times. Use the unique business key (guid) to find-or-create
+      # the record, then update its attributes. This makes the handler
+      # idempotent and prevents Mysql2::Error: Duplicate entry on the
+      # unique index.
+      loan_app =
+        LoanApplication.create_with(
+          applicant_name: data[:applicant_name],
+          status: data[:status],
+          loan_amount: data[:loan_amount],
+          product_type: data[:product_type],
+          submitted_at: data[:submitted_at]
+        ).find_or_create_by!(guid: data[:guid])
+
+      # If the record already existed, update it with the latest payload.
+      loan_app.update!(
         applicant_name: data[:applicant_name],
         status: data[:status],
         loan_amount: data[:loan_amount],
         product_type: data[:product_type],
         submitted_at: data[:submitted_at]
       )
+
+      loan_app
+    rescue ActiveRecord::RecordNotUnique
+      # Handle the race condition where two concurrent messages with the same
+      # guid attempt to insert simultaneously. Retry as an update since the
+      # row now exists. This keeps the operation idempotent.
+      loan_app = LoanApplication.find_by!(guid: data[:guid])
+      loan_app.update!(
+        applicant_name: data[:applicant_name],
+        status: data[:status],
+        loan_amount: data[:loan_amount],
+        product_type: data[:product_type],
+        submitted_at: data[:submitted_at]
+      )
+      loan_app
     rescue ActiveRecord::RecordInvalid => e
       Rails.logger.warn "[UpsertApplicationJob] Validation failed: #{e.message}"
       raise
