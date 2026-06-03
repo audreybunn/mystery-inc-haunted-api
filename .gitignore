@@ -1,0 +1,45 @@
+# See https://help.github.com/articles/ignoring-files for more about ignoring files.
+
+# Environment variables
+.env
+.env.*
+
+# Ignore bundler config and installed gems
+/.bundle
+/vendor/bundle
+
+# Ignore all logfiles and tempfiles
+/log/*
+/tmp/*
+!/log/.keep
+!/tmp/.keep
+
+# Ignore uploaded files in development
+/storage/*
+!/storage/.keep
+
+# Ignore master key for decrypting credentials
+/config/master.key
+
+# Ignore application configuration
+/config/database.yml
+/config/secrets.yml
+
+# MacOS
+.DS_Store
+
+# RubyMine
+.idea/
+
+# VSCode
+.vscode/
+
+# Coverage reports
+/coverage/
+
+# Test artifacts
+/test/tmp/
+/test/version_tmp/
+
+# Redis dump
+dump.rdb

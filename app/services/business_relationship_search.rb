@@ -1,0 +1,73 @@
+require 'httparty'
+
+module NcinoConsumerApi
+  class BusinessRelationshipSearch
+    include HTTParty
+    base_uri ENV.fetch('NCINO_API_BASE_URL', 'https://api.ncino.com')
+
+    def initialize(tax_id:, legal_name:)
+      @tax_id = tax_id
+      @legal_name = legal_name
+    end
+
+    # Search for existing business relationship in the nCino platform
+    # Returns existing relationship ID if found, nil otherwise
+    def search
+      response = self.class.get(
+        '/v1/relationships/businesses/search',
+        query: build_query_params,
+        headers: auth_headers,
+        timeout: 10
+      )
+
+      if response.success?
+        parse_response(response)
+      else
+        log_error(response)
+        raise SearchError, "Error searching for existing business relationship: Received status #{response.code} for /v1/relationships/businesses/search"
+      end
+    rescue HTTParty::Error, Net::OpenTimeout => e
+      Rails.logger.error "[BusinessRelationshipSearch] HTTP error: #{e.message}"
+      raise SearchError, "Network error searching for business relationship: #{e.message}"
+    end
+
+    private
+
+    def build_query_params
+      # Build query parameters for the search endpoint
+      # Note: legal_name is provided for filtering results
+      {
+        legal_name: @legal_name,
+        include_inactive: false
+      }
+    end
+
+    def auth_headers
+      {
+        'Authorization' => "Bearer #{TokenEncryptor.decrypt(ENV['NCINO_API_TOKEN'])}",
+        'Content-Type' => 'application/json',
+        'X-API-Version' => '2.0'
+      }
+    end
+
+    def parse_response(response)
+      body = JSON.parse(response.body)
+      relationships = body.dig('data', 'relationships') || []
+
+      if relationships.any?
+        Rails.logger.info "[BusinessRelationshipSearch] Found #{relationships.size} existing relationship(s)"
+        relationships.first['id']
+      else
+        Rails.logger.info "[BusinessRelationshipSearch] No existing relationship found"
+        nil
+      end
+    end
+
+    def log_error(response)
+      Rails.logger.error "[BusinessRelationshipSearch] Search failed with status #{response.code}"
+      Rails.logger.error "[BusinessRelationshipSearch] Response body: #{response.body}"
+    end
+
+    class SearchError < StandardError; end
+  end
+end
