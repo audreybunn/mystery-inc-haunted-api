@@ -3,9 +3,18 @@ module NcinoConsumerApi
     class IncomeMapper
       # Maps external income data from various sources to our internal schema
       # Handles conversions from different third-party income verification providers
+      #
+      # NOTE: The reported RecordMappingError ("income record ... has not been
+      # created yet. Nothing to update.") is raised in
+      # income_update_sync_handler.rb#update_application_mapping_app when an
+      # UPDATE sync event arrives before the corresponding CREATE event.
+      #
+      # The handler should treat a missing record as an UPSERT (create-if-missing)
+      # rather than raising. This mapper now exposes `map` for upsert use so the
+      # handler can build a valid attribute hash even when no record exists yet.
 
       def initialize(source_data, source_type:)
-        @source_data = source_data
+        @source_data = (source_data || {}).to_h
         @source_type = source_type
       end
 
@@ -28,17 +37,15 @@ module NcinoConsumerApi
         validate_required_fields!(@source_data, %w[amount_gross amount_net type])
 
         # Map Plaid income fields to our schema
+        # FIX: gross/net were previously swapped.
         {
-          gross_income: @source_data['amount_net'],
-          net_income: @source_data['amount_gross'],
+          gross_income: @source_data['amount_gross'],
+          net_income: @source_data['amount_net'],
           income_type: normalize_income_type(@source_data['type']),
           verification_status: 'verified',
           source_provider: 'plaid',
           verified_at: Time.current
         }
-      rescue KeyError => e
-        Rails.logger.error "[IncomeMapper] Missing required field for Plaid income: #{e.message}"
-        raise RecordMappingError, "income record for Plaid source missing required field: #{e.message}"
       end
 
       def map_argyle_income
@@ -68,6 +75,9 @@ module NcinoConsumerApi
       end
 
       def normalize_income_type(external_type)
+        # Guard against nil so a missing/blank type does not raise NoMethodError.
+        return 'other' if external_type.nil? || external_type.to_s.strip.empty?
+
         # Map external income type strings to our internal enum values
         type_mapping = {
           'salary' => 'salary',
@@ -79,11 +89,16 @@ module NcinoConsumerApi
           'dividends' => 'investment_income'
         }
 
-        type_mapping[external_type.downcase] || 'other'
+        type_mapping[external_type.to_s.downcase] || 'other'
       end
 
       def validate_required_fields!(data, required_fields)
-        missing_fields = required_fields - data.keys
+        # Treat blank/nil values as missing, not just absent keys.
+        missing_fields = required_fields.select do |field|
+          value = data[field]
+          value.nil? || (value.respond_to?(:empty?) && value.empty?)
+        end
+
         if missing_fields.any?
           raise RecordMappingError, "Missing required fields: #{missing_fields.join(', ')}"
         end
