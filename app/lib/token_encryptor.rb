@@ -12,7 +12,8 @@ module NcinoConsumerApi
 
       def decrypt(encrypted_token)
         encryptor.decrypt_and_verify(encrypted_token)
-      rescue ActiveSupport::MessageEncryptor::InvalidMessage => e
+      rescue ActiveSupport::MessageEncryptor::InvalidMessage,
+             ActiveSupport::MessageVerifier::InvalidSignature => e
         Rails.logger.error "[TokenEncryptor] Error #{e.class} raised. Message: #{e.message}"
         raise DecryptionError, "Failed to decrypt token: #{e.message}"
       end
@@ -21,12 +22,17 @@ module NcinoConsumerApi
 
       def encryptor
         @encryptor ||= begin
-          # Generate encryption key from secret base
-          # The key should be 32 bytes for AES-256-CBC
+          # Generate encryption key from secret base.
+          # The key length MUST match the cipher's required key size.
+          # aes-256-gcm requires a 32-byte key.
           secret = ENV.fetch('SECRET_KEY_BASE', 'default_secret_for_development_only')
-          key = ActiveSupport::KeyGenerator.new(secret).generate_key('token_encryption', 16)
 
-          ActiveSupport::MessageEncryptor.new(key, cipher: 'aes-256-cbc')
+          cipher = 'aes-256-gcm'
+          key_len = ActiveSupport::MessageEncryptor.key_len(cipher) # 32 for aes-256-gcm
+
+          key = ActiveSupport::KeyGenerator.new(secret).generate_key('token_encryption', key_len)
+
+          ActiveSupport::MessageEncryptor.new(key, cipher: cipher)
         end
       end
     end
