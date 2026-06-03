@@ -8,7 +8,10 @@ module NcinoConsumerApi
                       auto_delete: true,
                       body_parser: :json
 
-    LOCK_TTL = 5000 # milliseconds
+    LOCK_TTL = 15_000 # milliseconds - must comfortably exceed worst-case upsert duration
+    LOCK_RETRY_COUNT = 10 # number of attempts to acquire the lock before giving up
+    LOCK_RETRY_DELAY = 200 # base delay between retries in milliseconds
+    LOCK_RETRY_JITTER = 100 # random jitter added to delay to avoid thundering herd
 
     # Process record update messages with distributed locking
     # Prevents concurrent updates to the same record across multiple workers
@@ -17,17 +20,26 @@ module NcinoConsumerApi
       record_type = body['record_type']
       record_id = body['record_id']
 
-      Rails.logger.info "[NcinoConsumerApi][UpsertRecordJob] Processing #{record_type}/#{record_id}"
+      Rails.logger.info "[NcinoConsumerApi][UpsertRecordJob] Processing #{record_type}/#{record_id} (guid: #{message_id})"
 
       lock_key = "upsert_lock:#{record_type}:#{record_id}"
 
-      lock_manager.lock(lock_key, LOCK_TTL, retry_count: 1, retry_delay: 100) do |locked|
-        if locked
+      lock_info = lock_manager.lock(lock_key, LOCK_TTL)
+
+      if lock_info
+        begin
           perform_upsert(record_type, record_id, body['data'])
           Rails.logger.info "[UpsertRecordJob] Successfully upserted #{record_type}/#{record_id}"
-        else
-          raise DistributedLockException, "Reached max DistributedLockException retries for UpsertRecordJob for #{record_type}/#{record_id}"
+        ensure
+          lock_manager.unlock(lock_info)
         end
+      else
+        # Lock could not be acquired even after Redlock's internal retries.
+        # Raise so Shoryuken/SQS can redeliver the message later instead of
+        # dropping the update. The message guid is included for traceability.
+        raise DistributedLockException,
+              "Reached max DistributedLockException retries for #{self.class.name.demodulize} " \
+              "for #{record_type} with guid #{message_id}"
       end
     rescue DistributedLockException => e
       Rails.logger.error "[NcinoConsumerApi][UpsertRecordJob] #{e.message}"
@@ -42,8 +54,9 @@ module NcinoConsumerApi
     def lock_manager
       @lock_manager ||= Redlock::Client.new(
         [ENV.fetch('REDIS_URL', 'redis://localhost:6379/0')],
-        retry_count: 1,
-        retry_delay: 100
+        retry_count: LOCK_RETRY_COUNT,
+        retry_delay: LOCK_RETRY_DELAY,
+        retry_jitter: LOCK_RETRY_JITTER
       )
     end
 
