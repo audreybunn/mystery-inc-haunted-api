@@ -28,9 +28,11 @@ module NcinoConsumerApi
         validate_required_fields!(@source_data, %w[amount_gross amount_net type])
 
         # Map Plaid income fields to our schema
+        # FIX: gross_income must come from amount_gross, net_income from amount_net.
+        # These were previously swapped, corrupting downstream income calculations.
         {
-          gross_income: @source_data['amount_net'],
-          net_income: @source_data['amount_gross'],
+          gross_income: @source_data['amount_gross'],
+          net_income: @source_data['amount_net'],
           income_type: normalize_income_type(@source_data['type']),
           verification_status: 'verified',
           source_provider: 'plaid',
@@ -68,6 +70,9 @@ module NcinoConsumerApi
       end
 
       def normalize_income_type(external_type)
+        # Guard against nil / non-string external types to avoid NoMethodError.
+        return 'other' if external_type.nil?
+
         # Map external income type strings to our internal enum values
         type_mapping = {
           'salary' => 'salary',
@@ -79,11 +84,15 @@ module NcinoConsumerApi
           'dividends' => 'investment_income'
         }
 
-        type_mapping[external_type.downcase] || 'other'
+        type_mapping[external_type.to_s.downcase.strip] || 'other'
       end
 
       def validate_required_fields!(data, required_fields)
-        missing_fields = required_fields - data.keys
+        # Treat blank/nil values as missing as well, not just absent keys.
+        missing_fields = required_fields.reject do |field|
+          data.key?(field) && !data[field].nil? && data[field].to_s.strip != ''
+        end
+
         if missing_fields.any?
           raise RecordMappingError, "Missing required fields: #{missing_fields.join(', ')}"
         end
